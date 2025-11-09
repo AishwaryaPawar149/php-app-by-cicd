@@ -6,22 +6,18 @@ pipeline {
     }
 
     environment {
-        // Target server
-        TARGET_SERVER = '52.66.229.213'
-        TARGET_USER   = 'ubuntu'
-        DEPLOY_PATH   = '/var/www/html/travel-app'
-
-        // Credentials from Jenkins
-        AWS_ACCESS_KEY_ID     = credentials('aws-access-key-id')
-        AWS_SECRET_ACCESS_KEY = credentials('aws-secret-access-key')
-        DB_PASSWORD           = credentials('db-password')
+        TARGET_SERVER = '52.66.229.213'         // Replace with your target server IP
+        TARGET_USER   = 'ubuntu'                // SSH user
+        DEPLOY_PATH   = '/var/www/html/travel-app'  // Deployment directory
     }
 
     stages {
         stage('Checkout Code') {
             steps {
                 echo 'Pulling code from GitHub...'
-                git branch: 'main', url: 'https://github.com/AishwaryaPawar149/php-app-by-cicd.git'
+                git branch: 'main',
+                    url: 'https://github.com/AishwaryaPawar149/php-app-by-cicd.git',
+                    credentialsId: 'pull-key'
             }
         }
 
@@ -29,12 +25,8 @@ pipeline {
             steps {
                 echo 'Validating project files...'
                 sh '''
-                    if [ ! -f "index.html" ]; then
-                        echo "ERROR: index.html not found"
-                        exit 1
-                    fi
-                    if [ ! -f "submit.php" ]; then
-                        echo "ERROR: submit.php not found"
+                    if [ ! -f "index.html" ] || [ ! -f "submit.php" ]; then
+                        echo "ERROR: Required files missing"
                         exit 1
                     fi
                     echo "All required files present"
@@ -50,6 +42,7 @@ pipeline {
                     cp index.html deploy_package/
                     cp submit.php deploy_package/
                     cp .gitignore deploy_package/
+                    cp .env deploy_package/
                     echo "Deployment package ready"
                 '''
             }
@@ -60,48 +53,27 @@ pipeline {
                 echo 'Deploying to target server...'
                 sshagent(['target-server-ssh-key']) {
                     sh """
-                        ssh -o StrictHostKeyChecking=no ${TARGET_USER}@${TARGET_SERVER} '
-                            sudo mkdir -p ${DEPLOY_PATH}
-                            sudo chown ${TARGET_USER}:${TARGET_USER} ${DEPLOY_PATH}
-                        '
                         scp -o StrictHostKeyChecking=no -r deploy_package/* ${TARGET_USER}@${TARGET_SERVER}:${DEPLOY_PATH}/
                         ssh -o StrictHostKeyChecking=no ${TARGET_USER}@${TARGET_SERVER} '
-                            cd ${DEPLOY_PATH}
-                            sudo chown -R www-data:www-data .
-                            sudo chmod -R 755 .
-                            sudo find . -type f -exec chmod 644 {} \\;
-                            sudo find . -type d -exec chmod 755 {} \\;
+                            sudo chown -R www-data:www-data ${DEPLOY_PATH}
+                            sudo find ${DEPLOY_PATH} -type d -exec chmod 755 {} \\;
+                            sudo find ${DEPLOY_PATH} -type f -exec chmod 644 {} \\;
+                            echo "Files deployed and permissions set"
                         '
                     """
                 }
             }
         }
 
-        stage('Create Config File') {
+        stage('Load Environment') {
             steps {
-                echo 'Creating config.php with credentials...'
+                echo 'Loading environment variables from .env on server...'
                 sshagent(['target-server-ssh-key']) {
                     sh """
                         ssh -o StrictHostKeyChecking=no ${TARGET_USER}@${TARGET_SERVER} '
                             cd ${DEPLOY_PATH}
-                            cat > config.php << EOF
-<?php
-define("AWS_ACCESS_KEY_ID", "${AWS_ACCESS_KEY_ID}");
-define("AWS_SECRET_ACCESS_KEY", "${AWS_SECRET_ACCESS_KEY}");
-define("S3_BUCKET_NAME", "travel-memory-bucket-by-aish");
-define("S3_REGION", "ap-south-1");
-
-define("DB_HOST", "database-2.cdwkuiksmrsm.ap-south-1.rds.amazonaws.com");
-define("DB_PORT", "3306");
-define("DB_NAME", "travel_memory_db");
-define("DB_USER", "root");
-define("DB_PASSWORD", "${DB_PASSWORD}");
-
-define("DB_TABLE", "travel_memories");
-?>
-EOF
-                            sudo chmod 600 config.php
-                            sudo chown www-data:www-data config.php
+                            export \$(grep -v "^#" .env | xargs)
+                            echo "Environment variables loaded"
                         '
                     """
                 }
@@ -118,9 +90,8 @@ EOF
                             if ! command -v composer &> /dev/null; then
                                 curl -sS https://getcomposer.org/installer | sudo php -- --install-dir=/usr/local/bin --filename=composer
                             fi
-                            if [ ! -d "vendor" ]; then
-                                composer require aws/aws-sdk-php
-                            fi
+                            composer install --no-dev
+                            echo "Dependencies installed"
                         '
                     """
                 }
@@ -129,11 +100,12 @@ EOF
 
         stage('Restart Web Server') {
             steps {
-                echo 'Restarting web server...'
+                echo 'Restarting Apache/Nginx...'
                 sshagent(['target-server-ssh-key']) {
                     sh """
                         ssh -o StrictHostKeyChecking=no ${TARGET_USER}@${TARGET_SERVER} '
                             sudo systemctl restart apache2 || sudo systemctl restart nginx
+                            echo "Web server restarted"
                         '
                     """
                 }
@@ -152,7 +124,7 @@ EOF
                     if (response == '200') {
                         echo "✅ Health check passed! Application is running."
                     } else {
-                        error "⚠️ Health check failed with status ${response}"
+                        error "❌ Health check failed! Status code: ${response}"
                     }
                 }
             }
