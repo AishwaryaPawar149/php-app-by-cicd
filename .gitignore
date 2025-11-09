@@ -1,0 +1,21 @@
+# Sensitive files
+config.php
+.env
+.env.local
+
+# Composer
+vendor/
+
+# Logs
+*.log
+error_log
+
+# OS / IDE files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*.tmp
+*.temp
